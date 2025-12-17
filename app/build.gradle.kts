@@ -50,5 +50,7 @@ dependencies {
 
     // Библиотека VLC для видео (RTSP поток)
     implementation("org.videolan.android:libvlc-all:3.6.0")
+
+
     // --------------------
 }

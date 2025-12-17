@@ -1,25 +1,24 @@
-package com.example.myapplication // УБЕДИСЬ, ЧТО ИМЯ ПАКЕТА СОВПАДАЕТ С ТВОИМ
+package com.example.myapplication
 
-import android.content.ContentValues
-import android.graphics.Bitmap
-import android.provider.MediaStore
 import android.app.PendingIntent
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.hardware.usb.UsbManager
 import android.net.Uri
-import android.graphics.Canvas
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
 import android.widget.Button
 import android.widget.EditText
-import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
-import androidx.core.net.toUri
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.net.toUri
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
 import org.videolan.libvlc.LibVLC
@@ -46,8 +45,6 @@ class MainActivity : AppCompatActivity() {
 
     // --- UI ---
     private lateinit var tvStatus: TextView
-    private lateinit var seekBarLeft: SeekBar
-    private lateinit var seekBarRight: SeekBar
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,13 +53,15 @@ class MainActivity : AppCompatActivity() {
         // Инициализация UI
         videoLayout = findViewById(R.id.videoLayout)
         tvStatus = findViewById(R.id.tvStatus)
-        seekBarLeft = findViewById(R.id.seekBarLeft)
-        seekBarRight = findViewById(R.id.seekBarRight)
 
         val etIpAddress = findViewById<EditText>(R.id.etIpAddress)
         val btnConnectVideo = findViewById<Button>(R.id.btnConnectCamera)
         val btnConnectUsb = findViewById<Button>(R.id.btnConnectUsb)
         val btnSnapshot = findViewById<Button>(R.id.btnSnapshot)
+
+        // --- ДЖОЙСТИК ---
+        // Убедись, что в layout используется наш кастомный класс
+        val joystick = findViewById<JoystickView>(R.id.joystickView)
 
         // Логика кнопок
         btnConnectUsb.setOnClickListener { connectUsb() }
@@ -72,31 +71,32 @@ class MainActivity : AppCompatActivity() {
         }
         btnSnapshot.setOnClickListener { takeSnapshot() }
 
-        // Логика Ползунков (Motor Control)
-        setupJoystick(seekBarLeft, 1) // M1
-        setupJoystick(seekBarRight, 2) // M2
+        // Логика Джойстика
+        setupJoystick(joystick)
     }
 
-    // --- УПРАВЛЕНИЕ ДВИГАТЕЛЯМИ ---
-    private fun setupJoystick(seekBar: SeekBar, motorIndex: Int) {
-        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(
-                seekBar: SeekBar?,
-                progress: Int,
-                fromUser: Boolean
-            ) {
-                // SeekBar 0..200 -> Motor -100..100
-                val speed = progress - 100
-                sendToEsp("M$motorIndex:$speed\n")
-            }
+    // --- УПРАВЛЕНИЕ ДВИГАТЕЛЯМИ (ДЖОЙСТИК) ---
+    private fun setupJoystick(joystick: JoystickView) {
+        joystick.onMoveListener = { x, y ->
+            // x и y приходят в диапазоне -100..100
 
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {
-                // Пружина: возврат в центр при отпускании
-                seekBar?.progress = 100
-                sendToEsp("M$motorIndex:0\n")
-            }
-        })
+            // Микширование для танкового управления (дифференциальный привод)
+            // При движении вперед (y > 0), оба мотора крутятся вперед.
+            // При повороте (x != 0), добавляем разницу скоростей.
+
+            var leftMotor = y + x
+            var rightMotor = y - x
+
+            // Ограничиваем значения, чтобы не выйти за пределы -100..100
+            leftMotor = leftMotor.coerceIn(-100, 100)
+            rightMotor = rightMotor.coerceIn(-100, 100)
+
+            // Отправляем данные на ESP
+            // Используем один вызов write, если ESP умеет парсить сразу две команды,
+            // или два вызова, как у тебя было раньше.
+            sendToEsp("M1:$leftMotor\n")
+            sendToEsp("M2:$rightMotor\n")
+        }
     }
 
     private fun sendToEsp(command: String) {
@@ -120,11 +120,9 @@ class MainActivity : AppCompatActivity() {
             tvStatus.setText(R.string.no_usb_device)
             return
         }
-        // Берем первое попавшееся устройство (например, CH340)
         val driver = availableDrivers[0]
         val connection = usbManager!!.openDevice(driver.device)
         if (connection == null) {
-            // Запрашиваем права, если их нет
             val pendingIntent = PendingIntent.getBroadcast(
                 this,
                 0,
@@ -134,10 +132,9 @@ class MainActivity : AppCompatActivity() {
             usbManager!!.requestPermission(driver.device, pendingIntent)
             return
         }
-        usbSerialPort = driver.ports[0] // Обычно порт 0
+        usbSerialPort = driver.ports[0]
         try {
             usbSerialPort!!.open(connection)
-            // Настройки: 115200 бод, 8 бит, 1 стоп-бит, без четности
             usbSerialPort!!.setParameters(115200, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
             tvStatus.setText(R.string.usb_connected)
             tvStatus.setTextColor(getColor(R.color.status_ok))
@@ -152,16 +149,15 @@ class MainActivity : AppCompatActivity() {
     private fun startVideo(url: String) {
         try {
             val args = arrayListOf<String>()
-            args.add("-vvv") // Логи
-            args.add("--rtsp-tcp") // Использовать TCP для стабильности
-            args.add("--network-caching=150") // Кэш 150мс
+            args.add("-vvv")
+            args.add("--rtsp-tcp")
+            args.add("--network-caching=150")
 
             libVlc = LibVLC(this, args)
             mediaPlayer = MediaPlayer(libVlc)
             mediaPlayer!!.attachViews(videoLayout, null, false, false)
             val media = Media(libVlc, url.toUri())
 
-            // Дополнительные опции для низкой задержки
             media.addOption(":network-caching=150")
             media.addOption(":clock-jitter=0")
             media.addOption(":clock-synchro=0")
@@ -182,8 +178,6 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Video stream not active.", Toast.LENGTH_SHORT).show()
             return
         }
-
-        // 1. Получаем размер видеоконтейнера
         val videoWidth = videoLayout.width
         val videoHeight = videoLayout.height
 
@@ -192,10 +186,8 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // 2. Создаём Bitmap нужного размера
         val bitmap = Bitmap.createBitmap(videoWidth, videoHeight, Bitmap.Config.ARGB_8888)
 
-        // 3. Рисуем содержимое видеоLayout в Bitmap
         try {
             videoLayout.draw(Canvas(bitmap))
         } catch (e: Exception) {
@@ -204,7 +196,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // 4. Сохраняем Bitmap в галерею (MediaStore API)
         val displayName = "snapshot_${System.currentTimeMillis()}.jpg"
         val mimeType = "image/jpeg"
 
@@ -230,18 +221,13 @@ class MainActivity : AppCompatActivity() {
                         bitmap.compress(Bitmap.CompressFormat.JPEG, 90, outputStream)
                         Toast.makeText(
                             this,
-                            "Скриншот сохранён: ${Environment.DIRECTORY_PICTURES}/TubeExplorer/$displayName",
+                            "Скриншот сохранён",
                             Toast.LENGTH_LONG
                         ).show()
-                    } else {
-                        Toast.makeText(this, "Не удалось открыть поток для сохранения", Toast.LENGTH_SHORT).show()
                     }
                 }
-            } else {
-                Toast.makeText(this, "Не удалось создать URI для сохранения", Toast.LENGTH_SHORT).show()
             }
         } catch (e: Exception) {
-            Log.e("SNAPSHOT", "Error saving snapshot: ${e.message}", e)
             Toast.makeText(this, "Ошибка сохранения: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
