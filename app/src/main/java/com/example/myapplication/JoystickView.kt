@@ -75,13 +75,18 @@ class JoystickView @JvmOverloads constructor(
                     joyY = event.y
                 }
 
-                // Вычисляем проценты (-100..100)
-                // Y инвертируем, т.к. на экране Y растет вниз, а нам нужно вверх = +
-                val percentX = ((joyX - centerX) / baseRadius * 100).toInt()
-                val percentY = -((joyY - centerY) / baseRadius * 100).toInt()
+                val rawX = joyX - centerX
+                val rawY = joyY - centerY
+
+// Преобразуем в проценты (-100..100)
+// Для X: вправо — это плюс, влево — минус.
+// Для Y: вверх — это плюс, вниз — минус (поэтому инвертируем через минус).
+                val percentX = (rawX / baseRadius * 100).toInt().coerceIn(-100, 100)
+                val percentY = -(rawY / baseRadius * 100).toInt().coerceIn(-100, 100)
 
                 val currentTime = System.currentTimeMillis()
                 if (currentTime - lastSendTime > interval) {
+                    // ПЕРЕДАЕМ ПАРАМЕТРЫ: сначала X, потом Y
                     onMoveListener?.invoke(percentX, percentY)
                     lastSendTime = currentTime
                 }
